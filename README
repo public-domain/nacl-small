@@ -1,0 +1,127 @@
+NaCl cryptography primitives for small MCUs
+Daniel Beer <dlbeer@gmail.com>, 8 Jan 2014
+
+This software is in the public domain.
+
+The files included in this directory implement the following
+cryptographic primitives:
+
+  * The Salsa20 and HSalsa20 functions.
+
+  * The Poly1305 message authentication code.
+
+  * NaCl's box encrypt-and-MAC operation.
+
+They are optimized to reduce code and stack size on small (8 and 16-bit)
+MCUs, possibly at a slight performance penalty. Note that while these
+functions produce the same results as NaCl, the API is different. In
+particular:
+
+  * The Salsa20 and HSalsa20 functions take a raw input block as an
+    argument, rather than taking the key, nonce and constants
+    separately.
+
+  * The Poly1305 evaluation function takes the constants R and N
+    separately.
+
+  * The box functions don't use or require zero-padding on either the
+    plaintext or ciphertext. A pointer to the 16-byte authenticator is
+    passed separately. By convention, this authenticator is normally
+    prepended to the ciphertext. These functions also mix the keystream
+    in-place.
+
+  * The box functions implement Salsa20. XSalsa20 operation is obtained
+    by first deriving a Salsa20 subkey from the XSalsa20 key and first
+    16 bytes of nonce (the remaining 8 bytes are used for the Salsa20
+    nonce).
+
+Here's a code snippet which takes an XSalsa20 key and nonce and produces
+an encrypted-and-authenticated ciphertext:
+
+    #include "box.h"
+
+    #define MSG_SIZE	100
+
+    uint8_t key[CRYPTO_BOX_KEY_SIZE];
+    uint8_t nonce[CRYPTO_BOX_XNONCE_SIZE + CRYPTO_BOX_NONCE_SIZE];
+    uint8_t subkey[CRYPTO_BOX_KEY_SIZE];
+    uint8_t plaintext[MSG_SIZE];
+    uint8_t ciphertext[MSG_SIZE + CRYPTO_BOX_AUTH_SIZE];
+
+    /* Assume key, nonce and plaintext are initialized... */
+
+    /* Derive a Salsa20 subkey */
+    crypto_xsalsa20_subkey(subkey, key, nonce);
+
+    /* Encrypt and MAC the plaintext */
+    memcpy(ciphertext + CRYPTO_BOX_AUTH_SIZE, plaintext, MSG_SIZE);
+    crypto_box(ciphertext + CRYPTO_BOX_AUTH_SIZE, /* message */
+    	       MSG_SIZE,
+    	       ciphertext, /* authenticator buffer */
+	       subkey,
+	       nonce + CRYPTO_BOX_XNONCE_SIZE);
+
+This example shows how you'd use the crypto_box() function to encrypt
+from one buffer to another. However, on a small device you'd probably
+prefer to assemble the message and encrypt it in-place.
+
+To authenticate and decrypt a message, use crypto_box_open() with the
+same subkey and Salsa20 nonce used with crypto_box():
+
+    uint8_t r;
+
+    r = crypto_box_open(ciphertext + CRYPTO_BOX_AUTH_SIZE, /* message */
+    			MSG_SIZE,
+			ciphertext, /* authenticator buffer */
+			subkey,
+			nonce + CRYPTO_BOX_XNONCE_SIZE);
+
+The function returns zero on success, or non-zero if the authenticator
+is bad. If the authentiator is invalid, decryption is not performed and
+the message buffer is left unchanged.
+
+A test program and a set of test vectors (generated with NaCl) is
+included. To run tests:
+
+    gcc -O1 -Wall -o test *.c
+    ./test < test_data.txt
+
+As stated above, this code aims to use as little program memory and
+stack space as possible, to make it usable on small MCUs. The following
+data was gathered with:
+
+  * avr-gcc 4.7.2
+  * binutils 2.23.1
+  * avr-libc 1.8.0 (headers only)
+  * Compiler flags: -fstack-usage -O1 -Wall -std=c99 -mmcu=atmega1280
+
+First, output from size:
+
+       text    data     bss     dec     hex filename
+       1174       0       0    1174     496 box.o
+       1004       0       0    1004     3ec poly1305.o
+       1572       0       0    1572     624 salsa20.o
+       3750       0       0    3750     ea6 (TOTALS)
+
+Then from avstack.pl ($call_cost = 4):
+
+      Func                               Cost    Frame   Height
+    ------------------------------------------------------------------------
+    > crypto_box                          192       90        5
+    > crypto_box_open                     188       86        5
+    > crypto_xsalsa20_subkey              163       76        4
+      ks_block                            102       12        4
+      crypto_salsa20                       90       78        3
+      crypto_poly1305_eval                 89       37        2
+      crypto_hsalsa20                      87       75        3
+      mul_modp                             52       52        1
+      dround                               12        6        2
+      op9                                   6        6        1
+      op7                                   6        6        1
+      op18                                  6        6        1
+      op13                                  6        6        1
+      add_chunk                             5        5        1
+      crypto_poly1305_prepare_r             4        4        1
+      crypto_salsa20_defconst               4        4        1
+      crypto_poly1305_compare               4        4        1
+      mix                                   4        4        1
